@@ -22,6 +22,9 @@ class ActsAsTsearchTest < Test::Unit::TestCase
 
   def setup
     create_fixtures(:blog_entries, :blog_comments, :profiles)
+    [ BlogEntry, BlogComment, Profile ].each do |klass|
+      klass.reset_column_information
+    end
   end  
   
   # Is your db setup properly for tests?

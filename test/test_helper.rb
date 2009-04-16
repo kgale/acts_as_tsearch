@@ -1,15 +1,21 @@
 $:.unshift(File.dirname(__FILE__) + '/../lib')
 RAILS_ROOT = File.dirname(__FILE__)
+RAILS_ENV  = 'test'
 
+require 'pp'
 require 'rubygems'
 require 'test/unit'
 require 'active_record'
 require 'active_record/fixtures'
+require File.dirname(__FILE__) + '/../../after_commit/lib/after_commit.rb'
+require File.dirname(__FILE__) + '/../../after_commit/lib/after_commit/active_record.rb'
+require File.dirname(__FILE__) + '/../../after_commit/lib/after_commit/connection_adapters.rb'
+require File.dirname(__FILE__) + '/../../after_commit/init.rb'
 require "#{File.dirname(__FILE__)}/../init"
 
-config = YAML::load(IO.read(File.dirname(__FILE__) + '/database.yml'))
-ActiveRecord::Base.logger = Logger.new(File.dirname(__FILE__) + "/debug.log")
-ActiveRecord::Base.establish_connection(config[ENV['DB'] || 'postgresql'])
+ActiveRecord::Base.logger         = Logger.new(File.dirname(__FILE__) + "/debug.log")
+ActiveRecord::Base.configurations = YAML::load(IO.read(File.dirname(__FILE__) + '/database.yml'))
+ActiveRecord::Base.establish_connection(RAILS_ENV)
 
 load(File.dirname(__FILE__) + "/schema.rb") if File.exist?(File.dirname(__FILE__) + "/schema.rb")
 

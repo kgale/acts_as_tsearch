@@ -17,8 +17,31 @@ module TsearchMixin
           @tsearch_config
         end
 
+        def using_tsearch_db
+          if RAILS_ENV == 'test' || !ActiveRecord::Base.configurations.has_key?("tsearch")
+            yield
+          else
+            #original_connection = connection.dup
+            begin
+              pp "Using tsearch_db"
+              establish_connection(:tsearch)
+              yield
+            ensure
+              #self.connection = original_connection
+              establish_connection(RAILS_ENV.intern)
+            end
+          end
+        end
+
+        def tsearch_db_column_names(*args)
+          using_tsearch_db do
+            column_names(*args)
+          end
+        end
+
         def acts_as_tsearch(options = {})
-          default_config = {:locale => "default", :auto_update_index => true}
+
+          default_config = {:locale => "default", :auto_update_index => true}.merge(defined?(TSEARCH_DEFAULT_CONFIG) ? TSEARCH_DEFAULT_CONFIG : {})
           @tsearch_config = {}
           if !options.is_a?(Hash)
             raise "Missing required fields for acts_as_tsearch.  At a bare minimum you need :fields => 'SomeFileName'.  Please see
@@ -80,7 +103,7 @@ module TsearchMixin
             #TODO Write check code for multi-table... ignoring this for now
             missing_fields = []
             fields.each do |f|
-              missing_fields << f.to_s unless column_names().include?(f.to_s) or f.to_s.include?(".")
+              missing_fields << f.to_s unless tsearch_db_column_names().include?(f.to_s) or f.to_s.include?(".")
             end
             raise ArgumentError, "Missing fields: #{missing_fields.sort.join(",")} in acts_as_tsearch definition for 
               table #{table_name}" if missing_fields.size > 0
@@ -92,6 +115,7 @@ module TsearchMixin
               @@postgresql_version
             end
             
+            #after_commit :update_vector_row
             after_save :update_vector_row
           
             extend TsearchMixin::Acts::Tsearch::SingletonMethods
@@ -139,7 +163,7 @@ module TsearchMixin
 
           locale = @tsearch_config[tsearch_options[:vector].intern][:locale]
           check_for_vector_column(tsearch_options[:vector])
-          
+
           search_string = fix_tsearch_query(search_string) if tsearch_options[:fix_query] == true
           
           #add tsearch_rank to fields returned
@@ -169,11 +193,11 @@ module TsearchMixin
           end
           
           #add tsearch_query to from
-          if is_postgresql_83?
-            from_part = "to_tsquery('#{search_string}') as tsearch_query"
-          else
+          #if is_postgresql_83?
+          #  from_part = "to_tsquery('#{search_string}') as tsearch_query"
+          #else
             from_part = "to_tsquery('#{locale}','#{search_string}') as tsearch_query"
-          end
+          #end
           if options[:from]
             options[:from] = "#{from_part}, #{options[:from]}"
           else
@@ -199,7 +223,9 @@ module TsearchMixin
           end
           
           #finally - return results
-          find(:all, options)
+          using_tsearch_db do
+            find(:all, options)
+          end
           # find(:all,
           #   :select => "#{table_name}.*, rank_cd(blogger_groups.vectors, query) as rank",
           #   :from => "#{table_name}, to_tsquery('default','#{search_string}') as query",
@@ -240,7 +266,7 @@ module TsearchMixin
         #checks to see if vector column exists.  if it doesn't exist, create it and update isn't index.
         def check_for_vector_column(vector_name = "vectors")
           #check for the basics
-          if !column_names().include?(vector_name)
+          if !tsearch_db_column_names().include?(vector_name)
             #puts "Creating vector column"
             create_vector(vector_name)
             #puts "Update vector index"
@@ -253,21 +279,56 @@ module TsearchMixin
         #current just falls through if it fails... this needs work
         def create_vector(vector_name = "vectors")
           sql = []
-          if column_names().include?(vector_name)
+          if tsearch_db_column_names().include?(vector_name)
             sql << "alter table #{table_name} drop column #{vector_name}"
           end
           sql << "alter table #{table_name} add column #{vector_name} tsvector"
           sql << "CREATE INDEX #{table_name}_fts_#{vector_name}_index ON #{table_name} USING gist(#{vector_name})"
           sql.each do |s|
             begin
-              connection.execute(s)
-              #puts s
-              reset_column_information
+              using_tsearch_db do
+                connection.execute(s)
+                reset_column_information
+              end
             rescue StandardError => bang
               puts "Error in create_vector executing #{s} " + bang.to_yaml
               puts ""
             end
           end
+          if conf = @tsearch_config[vector_name.to_sym]
+            create_vector_trigger if conf[:triggers]
+          end
+        end
+
+        def create_vector_trigger(vector_name = "vectors")
+          conf   = @tsearch_config[vector_name.intern]
+          locale = conf[:locale]
+          fields = conf[:fields]
+          tables = conf[:tables]
+          t_name = "tsearch_#{table_name}_#{vector_name}"
+          sql    = [
+            "
+              CREATE OR REPLACE FUNCTION #{t_name}() RETURNS trigger AS $tsearch$
+                DECLARE
+                BEGIN
+                  IF TG_OP = 'UPDATE' OR TG_OP = 'INSERT' THEN
+                    NEW.#{vector_name} := to_tsvector('#{locale}',#{coalesce_array(fields.collect { |f| "NEW.#{f}" })});
+                    RETURN NEW;
+                  END IF;
+                END;
+              $tsearch$ LANGUAGE plpgsql;
+            ",
+            "DROP TRIGGER IF EXISTS t_#{t_name} ON #{table_name}",
+            "
+              CREATE TRIGGER t_#{t_name}
+              BEFORE INSERT OR UPDATE ON #{table_name}
+              FOR EACH ROW EXECUTE PROCEDURE #{t_name}()
+            "]
+            sql.collect do |s|
+              using_tsearch_db do
+                connection.execute(s)
+              end
+            end
         end
         
         def update_vectors(row_id = nil)
@@ -304,9 +365,15 @@ module TsearchMixin
         #           }
         def update_vector(row_id = nil, vector_name = "vectors")
           sql = ""
-          if !column_names().include?(vector_name)
+          if !tsearch_db_column_names().include?(vector_name)
             create_vector(vector_name)
           end
+
+          # If we're using triggers, we don't need to manually update single rows.
+          if @tsearch_config[vector_name.intern][:triggers] and !row_id.nil?
+            return
+          end
+
           if !@tsearch_config[vector_name.intern]
             raise "Missing vector #{vector_name} in hash #{@tsearch_config.to_yaml}"
           else
@@ -314,17 +381,17 @@ module TsearchMixin
             fields = @tsearch_config[vector_name.intern][:fields]
             tables = @tsearch_config[vector_name.intern][:tables]
             if fields.is_a?(Array)
-              if is_postgresql_83?
-                sql = "update #{table_name} set #{vector_name} = to_tsvector(#{coalesce_array(fields)})"
-              else
+              #if is_postgresql_83?
+              #  sql = "update #{table_name} set #{vector_name} = to_tsvector(#{coalesce_array(fields)})"
+              #else
                 sql = "update #{table_name} set #{vector_name} = to_tsvector('#{locale}',#{coalesce_array(fields)})"
-              end
+              #end
             elsif fields.is_a?(String)
-              if is_postgresql_83?
-                sql = "update #{table_name} set #{vector_name} = to_tsvector(#{fields})"
-              else
+              #if is_postgresql_83?
+              #  sql = "update #{table_name} set #{vector_name} = to_tsvector(#{fields})"
+              #else
                 sql = "update #{table_name} set #{vector_name} = to_tsvector('#{locale}', #{fields})"  
-              end
+              #end
             elsif fields.is_a?(Hash)
               if fields.size > 4
                 raise "acts_as_tsearch currently only supports up to 4 weighted sets."
@@ -332,11 +399,11 @@ module TsearchMixin
                 setweights = []
                 ["a","b","c","d"].each do |f|
                   if fields[f]
-                    if is_postgresql_83?
-                      setweights << "setweight( to_tsvector(#{coalesce_array(fields[f][:columns])}),'#{f.upcase}')"
-                    else
+                    #if is_postgresql_83?
+                    #  setweights << "setweight( to_tsvector(#{coalesce_array(fields[f][:columns])}),'#{f.upcase}')"
+                    #else
                       setweights << "setweight( to_tsvector('#{locale}', #{coalesce_array(fields[f][:columns])}),'#{f.upcase}')"
-                    end
+                    #end
                   end
                 end
                 sql = "update #{table_name} set #{vector_name} = #{setweights.join(" || ")}"
@@ -362,8 +429,9 @@ module TsearchMixin
               sql << " where " + where_arr.join(" and ")
             end
             
-            connection.execute(sql)
-            #puts sql
+            using_tsearch_db do
+              connection.execute(sql)
+            end
           end #tsearch config test
         end
         
