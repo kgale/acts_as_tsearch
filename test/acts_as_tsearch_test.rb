@@ -16,11 +16,16 @@
 #########################################
 require File.dirname(__FILE__) + '/test_helper'
 
+TSEARCH_DEFAULT_CONFIG = {}
+
 class ActsAsTsearchTest < Test::Unit::TestCase
 
   fixtures :blog_entries, :blog_comments, :profiles
 
   def setup
+    if ARGV.include?('-trigger')
+      TSEARCH_DEFAULT_CONFIG[:triggers] = true
+    end
     create_fixtures(:blog_entries, :blog_comments, :profiles)
     [ BlogEntry, BlogComment, Profile ].each do |klass|
       klass.reset_column_information

@@ -301,18 +301,20 @@ module TsearchMixin
         end
 
         def create_vector_trigger(vector_name = "vectors")
-          conf   = @tsearch_config[vector_name.intern]
-          locale = conf[:locale]
-          fields = conf[:fields]
-          tables = conf[:tables]
+          config = @tsearch_config[vector_name.intern]
+          locale = config[:locale]
+          fields = config[:fields]
+          tables = config[:tables]
           t_name = "tsearch_#{table_name}_#{vector_name}"
+          require 'pp'
+          pp config
           sql    = [
             "
               CREATE OR REPLACE FUNCTION #{t_name}() RETURNS trigger AS $tsearch$
                 DECLARE
                 BEGIN
                   IF TG_OP = 'UPDATE' OR TG_OP = 'INSERT' THEN
-                    NEW.#{vector_name} := to_tsvector('#{locale}',#{coalesce_array(fields.collect { |f| "NEW.#{f}" })});
+                    NEW.#{vector_name} := #{vector_source_sql(config, 'NEW.')};
                     RETURN NEW;
                   END IF;
                 END;
@@ -377,40 +379,13 @@ module TsearchMixin
           if !@tsearch_config[vector_name.intern]
             raise "Missing vector #{vector_name} in hash #{@tsearch_config.to_yaml}"
           else
-            locale = @tsearch_config[vector_name.intern][:locale]
-            fields = @tsearch_config[vector_name.intern][:fields]
+            config = @tsearch_config[vector_name.intern]
+            #locale = @tsearch_config[vector_name.intern][:locale]
+            #fields = @tsearch_config[vector_name.intern][:fields]
             tables = @tsearch_config[vector_name.intern][:tables]
-            if fields.is_a?(Array)
-              #if is_postgresql_83?
-              #  sql = "update #{table_name} set #{vector_name} = to_tsvector(#{coalesce_array(fields)})"
-              #else
-                sql = "update #{table_name} set #{vector_name} = to_tsvector('#{locale}',#{coalesce_array(fields)})"
-              #end
-            elsif fields.is_a?(String)
-              #if is_postgresql_83?
-              #  sql = "update #{table_name} set #{vector_name} = to_tsvector(#{fields})"
-              #else
-                sql = "update #{table_name} set #{vector_name} = to_tsvector('#{locale}', #{fields})"  
-              #end
-            elsif fields.is_a?(Hash)
-              if fields.size > 4
-                raise "acts_as_tsearch currently only supports up to 4 weighted sets."
-              else
-                setweights = []
-                ["a","b","c","d"].each do |f|
-                  if fields[f]
-                    #if is_postgresql_83?
-                    #  setweights << "setweight( to_tsvector(#{coalesce_array(fields[f][:columns])}),'#{f.upcase}')"
-                    #else
-                      setweights << "setweight( to_tsvector('#{locale}', #{coalesce_array(fields[f][:columns])}),'#{f.upcase}')"
-                    #end
-                  end
-                end
-                sql = "update #{table_name} set #{vector_name} = #{setweights.join(" || ")}"
-              end
-            else
-              raise ":fields was not an Array, Hash or a String."
-            end
+
+            sql = "UPDATE #{table_name} SET #{vector_name} = #{vector_source_sql(config)}"
+
             from_arr = []
             where_arr = []
             if !tables.nil? and tables.is_a?(Hash)
@@ -433,6 +408,31 @@ module TsearchMixin
               connection.execute(sql)
             end
           end #tsearch config test
+        end
+
+        def vector_source_sql(config, col_prefix='')
+          fields = config[:fields]
+          locale = config[:locale]
+          case fields
+            when Array:
+              "to_tsvector('#{locale}',#{coalesce_array(fields.collect { |field| col_prefix + field.to_s })})"
+            when String:
+              "to_tsvector('#{locale}', #{col_prefix + fields.to_s})"  
+            when Hash:
+              if fields.size > 4
+                raise "acts_as_tsearch currently only supports up to 4 weighted sets."
+              else
+                setweights = []
+                ["a","b","c","d"].each do |f|
+                  if fields[f]
+                    setweights << "setweight( to_tsvector('#{locale}', #{coalesce_array(fields[f][:columns].collect { |field| col_prefix + field.to_s })}),'#{f.upcase}')"
+                  end
+                end
+                "#{setweights.join(" || ")}"
+              end
+            else
+              raise ":fields was not an Array, Hash or a String."
+          end
         end
         
         def acts_as_tsearch_config

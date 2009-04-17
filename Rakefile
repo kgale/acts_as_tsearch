@@ -12,6 +12,13 @@ Rake::TestTask.new(:test) do |t|
   t.verbose = true
 end
 
+Rake::TestTask.new(:test) do |t|
+  t.libs << 'lib'
+  t.pattern = 'test/**/*_test.rb'
+  t.verbose = true
+  t.options = "-- -trigger"
+end
+
 desc 'Generate documentation for the acts_as_tsearch plugin.'
 Rake::RDocTask.new(:rdoc) do |rdoc|
   rdoc.rdoc_dir = 'rdoc'
