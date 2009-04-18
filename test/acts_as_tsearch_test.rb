@@ -23,6 +23,7 @@ class ActsAsTsearchTest < Test::Unit::TestCase
   fixtures :blog_entries, :blog_comments, :profiles
 
   def setup
+    ENV['FOO'] = nil
     if ARGV.include?('-trigger')
       TSEARCH_DEFAULT_CONFIG[:triggers] = true
     end
@@ -112,18 +113,24 @@ class ActsAsTsearchTest < Test::Unit::TestCase
                         :tables => {
                           :blog_comments => {
                             :from => "blog_entries b2 left outer join blog_comments on blog_comments.blog_entry_id = b2.id",
-                            :where => "b2.id = blog_entries.id"
+                            :where => "b2.id = blog_entries.id",
+                            :trig_where => "blog_entries.id = blog_comments.blog_entry_id"
                             }
                           }
                         }
 
     BlogEntry.update_vectors
     
+    pp BlogEntry.connection.select_all("select * from blog_entries where id=1") if ENV['FOO']
+
     assert_nothing_raised do
       b = BlogEntry.find(1)
       b.title = "Bob ate lunch today"
       b.save!
     end
+
+    pp BlogEntry.connection.select_all("select * from blog_entries where id=1") if ENV['FOO']
+    #sleep(1000) if TSEARCH_DEFAULT_CONFIG[:triggers]
     
     b = BlogEntry.find_by_tsearch("bob")[0]
     assert b.id == 1, b.to_yaml
@@ -139,11 +146,12 @@ class ActsAsTsearchTest < Test::Unit::TestCase
     
     b = BlogEntry.find_by_tsearch("crack")[0]
     assert b.id == 2, b.to_yaml
-    
+
   end
 
   # Test the auto-update functionality
   def test_add_row_and_search
+    ENV['FOO'] = '1'
     BlogEntry.acts_as_tsearch :fields => [:title, :description]
     BlogEntry.update_vectors
     b = BlogEntry.new
@@ -169,7 +177,8 @@ class ActsAsTsearchTest < Test::Unit::TestCase
   def test_add_row_and_search_flag_off
     BlogEntry.acts_as_tsearch :vectors => {
       :auto_update_index => false,
-      :fields => [:title, :description]
+      :fields            => [:title, :description],
+      :triggers          => false
     }
     BlogEntry.update_vectors
     b = BlogEntry.new

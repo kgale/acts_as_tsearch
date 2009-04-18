@@ -23,7 +23,6 @@ module TsearchMixin
           else
             #original_connection = connection.dup
             begin
-              pp "Using tsearch_db"
               establish_connection(:tsearch)
               yield
             ensure
@@ -265,14 +264,9 @@ module TsearchMixin
         
         #checks to see if vector column exists.  if it doesn't exist, create it and update isn't index.
         def check_for_vector_column(vector_name = "vectors")
-          #check for the basics
           if !tsearch_db_column_names().include?(vector_name)
-            #puts "Creating vector column"
             create_vector(vector_name)
-            #puts "Update vector index"
             update_vector(nil,vector_name)
-            # raise "Table is missing column [vectors].  Run method create_vector and then 
-            # update_vector to create this column and populate it."
           end
         end
 
@@ -296,21 +290,59 @@ module TsearchMixin
             end
           end
           if conf = @tsearch_config[vector_name.to_sym]
-            create_vector_trigger if conf[:triggers]
+            create_vector_trigger(vector_name) if conf[:triggers]
           end
         end
 
         def create_vector_trigger(vector_name = "vectors")
-          config = @tsearch_config[vector_name.intern]
-          locale = config[:locale]
-          fields = config[:fields]
-          tables = config[:tables]
-          t_name = "tsearch_#{table_name}_#{vector_name}"
-          require 'pp'
-          pp config
-          sql    = [
-            "
-              CREATE OR REPLACE FUNCTION #{t_name}() RETURNS trigger AS $tsearch$
+          config         = @tsearch_config[vector_name.intern]
+          locale         = config[:locale]
+          fields         = config[:fields]
+          tables         = config[:tables]
+          t_name         = "tsearch_#{table_name}_#{vector_name}"
+          sql            = []
+          trigger_tables = [ table_name ]
+          trigger_when   = "BEFORE"
+
+          if tables
+
+            from_conditions  = []
+            where_conditions = []
+            trigger_tables   = []
+            trigger_when     = "AFTER"
+            cols_by_table    = fields.collect do |item| 
+                item.is_a?(Array) ? item[1][:columns] : item 
+              end.flatten.inject({}) do |h,col| 
+                (t,c) = col.split('.'); h[t] ||= []; h[t] << c; h 
+              end
+
+            tables.keys.each do |t|
+              from_conditions  << t.to_s
+              where_conditions << tables[t][:trig_where]
+            end
+            
+            cols_by_table.keys.each do |t|
+              trigger_tables << t.to_s
+            
+              sql << "
+                CREATE OR REPLACE FUNCTION #{t_name + '_for_' + t}() RETURNS trigger AS $tsearch$
+                  DECLARE
+                  BEGIN
+                    IF (TG_OP = 'UPDATE' AND (#{cols_by_table[t.to_s].collect { |col| "NEW.#{col} != OLD.#{col}" }.join(" OR ")}) ) 
+                    OR TG_OP = 'INSERT' THEN
+                        UPDATE #{table_name} 
+                        SET #{vector_name} = #{vector_source_sql(config)}
+                        FROM #{from_conditions.join(',')}
+                        WHERE #{[ where_conditions, "#{t}.id = NEW.id" ].flatten.join(' AND ')};
+                    END IF;
+                    RETURN NEW;
+                  END;
+                $tsearch$ LANGUAGE plpgsql;
+              "
+            end
+          else
+            sql << "
+              CREATE OR REPLACE FUNCTION #{t_name + "_for_" + table_name}() RETURNS trigger AS $tsearch$
                 DECLARE
                 BEGIN
                   IF TG_OP = 'UPDATE' OR TG_OP = 'INSERT' THEN
@@ -319,18 +351,25 @@ module TsearchMixin
                   END IF;
                 END;
               $tsearch$ LANGUAGE plpgsql;
-            ",
-            "DROP TRIGGER IF EXISTS t_#{t_name} ON #{table_name}",
             "
-              CREATE TRIGGER t_#{t_name}
-              BEFORE INSERT OR UPDATE ON #{table_name}
-              FOR EACH ROW EXECUTE PROCEDURE #{t_name}()
-            "]
-            sql.collect do |s|
-              using_tsearch_db do
-                connection.execute(s)
-              end
+          end
+
+          trigger_tables.each do |trigger_table|
+            proc_name = t_name + "_for_" + trigger_table
+            sql << "DROP TRIGGER IF EXISTS t_#{proc_name} ON #{trigger_table}"
+            sql << "
+              CREATE TRIGGER t_#{proc_name}
+              #{trigger_when} INSERT OR UPDATE ON #{trigger_table}
+              FOR EACH ROW EXECUTE PROCEDURE #{proc_name}()
+            "
+          end
+
+          sql.collect do |s|
+            using_tsearch_db do
+              connection.execute(s) or exit
+              puts s if ENV['FOO']
             end
+          end
         end
         
         def update_vectors(row_id = nil)
