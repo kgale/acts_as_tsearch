@@ -367,7 +367,6 @@ module TsearchMixin
           sql.collect do |s|
             using_tsearch_db do
               connection.execute(s) or exit
-              puts s if ENV['FOO']
             end
           end
         end

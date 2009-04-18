@@ -23,7 +23,6 @@ class ActsAsTsearchTest < Test::Unit::TestCase
   fixtures :blog_entries, :blog_comments, :profiles
 
   def setup
-    ENV['FOO'] = nil
     if ARGV.include?('-trigger')
       TSEARCH_DEFAULT_CONFIG[:triggers] = true
     end
@@ -121,17 +120,12 @@ class ActsAsTsearchTest < Test::Unit::TestCase
 
     BlogEntry.update_vectors
     
-    pp BlogEntry.connection.select_all("select * from blog_entries where id=1") if ENV['FOO']
-
     assert_nothing_raised do
       b = BlogEntry.find(1)
       b.title = "Bob ate lunch today"
       b.save!
     end
 
-    pp BlogEntry.connection.select_all("select * from blog_entries where id=1") if ENV['FOO']
-    #sleep(1000) if TSEARCH_DEFAULT_CONFIG[:triggers]
-    
     b = BlogEntry.find_by_tsearch("bob")[0]
     assert b.id == 1, b.to_yaml
 
@@ -151,7 +145,6 @@ class ActsAsTsearchTest < Test::Unit::TestCase
 
   # Test the auto-update functionality
   def test_add_row_and_search
-    ENV['FOO'] = '1'
     BlogEntry.acts_as_tsearch :fields => [:title, :description]
     BlogEntry.update_vectors
     b = BlogEntry.new
