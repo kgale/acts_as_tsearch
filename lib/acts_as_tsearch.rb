@@ -114,8 +114,14 @@ module TsearchMixin
               @@postgresql_version
             end
             
-            #after_commit :update_vector_row
-            after_save :update_vector_row
+            after_commit :update_vector_row
+            #after_save :update_vector_row
+
+            @tsearch_config.keys.each do |k| 
+              if @tsearch_config[k][:triggers]
+                attr_readonly k
+              end
+            end
           
             extend TsearchMixin::Acts::Tsearch::SingletonMethods
           end
