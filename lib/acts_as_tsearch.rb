@@ -324,7 +324,7 @@ module TsearchMixin
 
             tables.keys.each do |t|
               from_conditions  << t.to_s
-              where_conditions << tables[t][:trig_where]
+              where_conditions << tables[t][:where]
             end
             
             cols_by_table.keys.each do |t|
@@ -434,7 +434,7 @@ module TsearchMixin
             where_arr = []
             if !tables.nil? and tables.is_a?(Hash)
               tables.keys.each do |k|
-                from_arr << tables[k][:from]
+                from_arr  << k.to_s
                 where_arr << tables[k][:where]
               end
               if from_arr.size > 0

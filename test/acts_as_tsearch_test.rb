@@ -104,19 +104,20 @@ class ActsAsTsearchTest < Test::Unit::TestCase
 
   # Do a simple multi-field search
   def test_multi_table
-    BlogEntry.acts_as_tsearch :vectors => {
-                        :fields => {
-                          "a" => {:columns => ["blog_entries.title"], :weight => 1},
-                          "b" => {:columns => ["blog_comments.comment"], :weight => 0.5}
-                          },
-                        :tables => {
-                          :blog_comments => {
-                            :from => "blog_entries b2 left outer join blog_comments on blog_comments.blog_entry_id = b2.id",
-                            :where => "b2.id = blog_entries.id",
-                            :trig_where => "blog_entries.id = blog_comments.blog_entry_id"
-                            }
-                          }
-                        }
+    BlogEntry.acts_as_tsearch(
+      :vectors => {
+        :fields => {
+          "a" => { :columns => ["blog_entries.title"   ], :weight => 1   },
+          "b" => { :columns => ["blog_comments.comment"], :weight => 0.5 }
+        },
+        :tables => {
+          :blog_comments => {
+            :where => "blog_entries.id = blog_comments.blog_entry_id"
+          }
+        }
+      }
+    )
+
 
     BlogEntry.update_vectors
     
