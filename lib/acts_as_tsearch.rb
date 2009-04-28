@@ -119,7 +119,7 @@ module TsearchMixin
 
             @tsearch_config.keys.each do |k| 
               if @tsearch_config[k][:triggers]
-                attr_readonly k
+                attr_ignored k
               end
             end
           
@@ -127,6 +127,25 @@ module TsearchMixin
           end
           include TsearchMixin::Acts::Tsearch::InstanceMethods
         end
+      end
+
+      class ActiveRecord::Base
+        cattr_accessor :ignored_attributes
+        self.ignored_attributes = []
+        def self.attr_ignored(*attributes)
+          self.ignored_attributes += attributes.collect(&:to_s)
+          self.ignored_attributes.uniq!
+        end
+
+        def attributes_with_quotes_with_ignored_removed(*args)
+          attributes = attributes_with_quotes_without_ignored_removed
+          if self.class.ignored_attributes.nil?
+            attributes
+          else
+            attributes.delete_if { |key, value| self.class.ignored_attributes.include?(key.gsub(/\(.+/,"")) }
+          end
+        end
+        alias_method_chain :attributes_with_quotes, :ignored_removed
       end
 
       module SingletonMethods
@@ -326,20 +345,37 @@ module TsearchMixin
               from_conditions  << t.to_s
               where_conditions << tables[t][:where]
             end
+
             
-            cols_by_table.keys.each do |t|
+            [cols_by_table.keys, table_name].flatten.uniq.each do |t|
               trigger_tables << t.to_s
+
+              update_sql = "
+                UPDATE #{table_name} 
+                SET #{vector_name} = #{vector_source_sql(config)}
+                FROM #{from_conditions.join(',')}
+                WHERE #{[ where_conditions, "#{t}.id = NEW.id" ].flatten.join(' AND ')};
+              "
+
+              columns   = cols_by_table[t.to_s]
+              is_update = if columns.any?
+                "
+                  IF TG_OP = 'UPDATE' THEN
+                    IF (#{columns.collect { |col| "NEW.#{col} != OLD.#{col}" }.join(" OR ")}) THEN
+                      #{update_sql}
+                    END IF;
+                  END IF;
+                "
+              else
+                ""
+              end
             
               sql << "
                 CREATE OR REPLACE FUNCTION #{t_name + '_for_' + t}() RETURNS trigger AS $tsearch$
-                  DECLARE
                   BEGIN
-                    IF (TG_OP = 'UPDATE' AND (#{cols_by_table[t.to_s].collect { |col| "NEW.#{col} != OLD.#{col}" }.join(" OR ")}) ) 
-                    OR TG_OP = 'INSERT' THEN
-                        UPDATE #{table_name} 
-                        SET #{vector_name} = #{vector_source_sql(config)}
-                        FROM #{from_conditions.join(',')}
-                        WHERE #{[ where_conditions, "#{t}.id = NEW.id" ].flatten.join(' AND ')};
+                    #{is_update}
+                    IF TG_OP = 'INSERT' THEN
+                      #{update_sql}
                     END IF;
                     RETURN NEW;
                   END;
@@ -349,7 +385,6 @@ module TsearchMixin
           else
             sql << "
               CREATE OR REPLACE FUNCTION #{t_name + "_for_" + table_name}() RETURNS trigger AS $tsearch$
-                DECLARE
                 BEGIN
                   IF TG_OP = 'UPDATE' OR TG_OP = 'INSERT' THEN
                     NEW.#{vector_name} := #{vector_source_sql(config, 'NEW.')};
