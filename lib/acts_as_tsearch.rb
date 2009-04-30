@@ -154,17 +154,14 @@ module TsearchMixin
         #
         #TODO:  Not sure how to handle order... current we add to it if it exists but this might not
         #be the right thing to do
-        def find_by_tsearch(search_string, options = nil, tsearch_options = nil)
+        def find_by_tsearch(search_string, options = {}, tsearch_options = {})
           raise ActiveRecord::RecordNotFound, "Couldn't find #{name} without a search string" if search_string.nil? || search_string.empty?
 
-          options = {} if options.nil?
-          tsearch_options = {} if tsearch_options.nil?
-          #assume vector column is named "vectors" unless otherwise specified
-          tsearch_options[:vector] = "vectors" unless tsearch_options.keys.include?(:vector)
+          tsearch_options = { :vector => "vectors", :fix_query => true }.merge(tsearch_options)
+
           raise "Vector [#{tsearch_options[:vector].intern}] not found 
                   in acts_as_tsearch config: #{@tsearch_config.to_yaml}
                   " if !@tsearch_config.keys.include?(tsearch_options[:vector].intern)
-          tsearch_options[:fix_query] = true if tsearch_options[:fix_query].nil?
 
           locale = @tsearch_config[tsearch_options[:vector].intern][:locale]
           check_for_vector_column(tsearch_options[:vector])
@@ -177,6 +174,7 @@ module TsearchMixin
           else
             tsearch_rank_function = "rank_cd(#{table_name}.#{tsearch_options[:vector]},tsearch_query#{','+tsearch_options[:normalization].to_s if tsearch_options[:normalization]})"
           end
+
           select_part = "#{tsearch_rank_function} as tsearch_rank"
           if options[:select]
             if options[:select].downcase != "count(*)"
@@ -185,8 +183,7 @@ module TsearchMixin
           else
             options[:select] = "#{table_name}.*, #{select_part}"
           end
-#options[:select] << " o w w e"          
-          #add headlines
+
           if tsearch_options[:headlines]
             tsearch_options[:headlines].each do |h|
               if is_postgresql_83?
@@ -197,12 +194,8 @@ module TsearchMixin
             end
           end
           
-          #add tsearch_query to from
-          #if is_postgresql_83?
-          #  from_part = "to_tsquery('#{search_string}') as tsearch_query"
-          #else
-            from_part = "to_tsquery('#{locale}','#{search_string}') as tsearch_query"
-          #end
+          from_part = "to_tsquery('#{locale}','#{search_string}') as tsearch_query"
+
           if options[:from]
             options[:from] = "#{from_part}, #{options[:from]}"
           else
@@ -215,10 +208,21 @@ module TsearchMixin
             options[:conditions] << " and #{where_part}"
           elsif options[:conditions] and options[:conditions].is_a? Array
             options[:conditions].first << " and #{where_part}"
+          elsif options[:conditions] and options[:conditions].is_a? Hash
+            cond_strings = []
+            cond_values  = []
+            options[:conditions].each do |k,v|
+              cond_strings << "#{k} = ?"
+              cond_values  << v
+            end
+            cond_strings << where_part
+            options[:conditions] = [ cond_strings.join(" AND "), cond_values ]
           else
             options[:conditions] = where_part
           end
+
           order_part = "tsearch_rank desc"
+
           if !options[:order]
             # Note if the :include option to ActiveRecord::Base.find is used, the :select option is ignored
             # (in ActiveRecord::Associations.construct_finder_sql_with_included_associations),
