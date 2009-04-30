@@ -21,18 +21,17 @@ module TsearchMixin
           if RAILS_ENV == 'test' || !ActiveRecord::Base.configurations.has_key?("tsearch")
             yield
           else
-            #original_connection = connection.dup
             begin
               establish_connection(:tsearch)
               yield
             ensure
-              #self.connection = original_connection
               establish_connection(RAILS_ENV.intern)
             end
           end
         end
 
         def tsearch_db_column_names(*args)
+          reset_column_information
           using_tsearch_db do
             column_names(*args)
           end
@@ -102,7 +101,7 @@ module TsearchMixin
             #TODO Write check code for multi-table... ignoring this for now
             missing_fields = []
             fields.each do |f|
-              missing_fields << f.to_s unless tsearch_db_column_names().include?(f.to_s) or f.to_s.include?(".")
+              missing_fields << f.to_s unless column_names().include?(f.to_s) or f.to_s.include?(".")
             end
             raise ArgumentError, "Missing fields: #{missing_fields.sort.join(",")} in acts_as_tsearch definition for 
               table #{table_name}" if missing_fields.size > 0
@@ -129,24 +128,6 @@ module TsearchMixin
         end
       end
 
-      class ActiveRecord::Base
-        cattr_accessor :ignored_attributes
-        self.ignored_attributes = []
-        def self.attr_ignored(*attributes)
-          self.ignored_attributes += attributes.collect(&:to_s)
-          self.ignored_attributes.uniq!
-        end
-
-        def attributes_with_quotes_with_ignored_removed(*args)
-          attributes = attributes_with_quotes_without_ignored_removed
-          if self.class.ignored_attributes.nil?
-            attributes
-          else
-            attributes.delete_if { |key, value| self.class.ignored_attributes.include?(key.gsub(/\(.+/,"")) }
-          end
-        end
-        alias_method_chain :attributes_with_quotes, :ignored_removed
-      end
 
       module SingletonMethods
 
@@ -459,8 +440,6 @@ module TsearchMixin
             raise "Missing vector #{vector_name} in hash #{@tsearch_config.to_yaml}"
           else
             config = @tsearch_config[vector_name.intern]
-            #locale = @tsearch_config[vector_name.intern][:locale]
-            #fields = @tsearch_config[vector_name.intern][:fields]
             tables = @tsearch_config[vector_name.intern][:tables]
 
             sql = "UPDATE #{table_name} SET #{vector_name} = #{vector_source_sql(config)}"
@@ -560,4 +539,26 @@ end
 
 ActiveRecord::Base.class_eval do
   include TsearchMixin::Acts::Tsearch
+end
+
+# Support the attr_ignored class method necessary for excluding the
+# vector columns from the primary (non-search) database.
+
+class ActiveRecord::Base
+  cattr_accessor :ignored_attributes
+  self.ignored_attributes = []
+  def self.attr_ignored(*attributes)
+    self.ignored_attributes += attributes.collect(&:to_s)
+    self.ignored_attributes.uniq!
+  end
+
+  def attributes_with_quotes_with_ignored_removed(*args)
+    attributes = attributes_with_quotes_without_ignored_removed
+    if self.class.ignored_attributes.nil?
+      attributes
+    else
+      attributes.delete_if { |key, value| self.class.ignored_attributes.include?(key.gsub(/\(.+/,"")) }
+    end
+  end
+  alias_method_chain :attributes_with_quotes, :ignored_removed
 end
