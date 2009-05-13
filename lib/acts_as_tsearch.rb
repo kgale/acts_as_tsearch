@@ -157,6 +157,8 @@ module TsearchMixin
         def find_by_tsearch(search_string, options = {}, tsearch_options = {})
           raise ActiveRecord::RecordNotFound, "Couldn't find #{name} without a search string" if search_string.nil? || search_string.empty?
 
+          options = options.dup # Will be modified in place.
+
           tsearch_options = { :vector => "vectors", :fix_query => true }.merge(tsearch_options)
 
           raise "Vector [#{tsearch_options[:vector].intern}] not found 
@@ -565,4 +567,20 @@ class ActiveRecord::Base
     end
   end
   alias_method_chain :attributes_with_quotes, :ignored_removed
+end
+
+class ModelSet
+  def self.acts_as_tsearch
+    model_class.tsearch_config.each do |vector, config|
+      define_method("tsearch_#{vector}!".intern) do |query_term|
+        add_conditions!("#{table_name}.#{vector} @@ to_tsquery('#{config[:locale]}', '#{query_term}')")
+      end
+
+      if vector == :vectors
+        alias_method :tsearch!, :tsearch_vectors!
+      end
+
+    end
+
+  end
 end
