@@ -278,7 +278,7 @@ module TsearchMixin
         def check_for_vector_column(vector_name = "vectors")
           if !tsearch_db_column_names().include?(vector_name)
             create_vector(vector_name)
-            update_vector(nil,vector_name)
+            update_vector(nil,vector_name) if tsearch_config[vector_name.intern][:auto_update_index]
           end
         end
 
@@ -559,7 +559,7 @@ class ActiveRecord::Base
   end
 
   def attributes_with_quotes_with_ignored_removed(*args)
-    attributes = attributes_with_quotes_without_ignored_removed
+    attributes = attributes_with_quotes_without_ignored_removed(*args)
     if self.class.ignored_attributes.nil?
       attributes
     else
